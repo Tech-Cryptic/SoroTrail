@@ -96,6 +96,8 @@ func dispatch(args []string) error {
 		return runCompletion(args[1:])
 	case "version", "--version", "-V":
 		return runVersion(args[1:])
+	case "stats":
+		return runStats(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -131,6 +133,8 @@ subcommands:
                    (sorotrail completion --help)
   version          print the build version, commit, and build date
                    (sorotrail version --help)
+  stats            print store stats as a table
+                   (sorotrail stats --help)
 `)
 }
 
@@ -164,6 +168,9 @@ func run() error {
 		pg   *store.Postgres
 	)
 	if strings.HasPrefix(cfg.DatabaseURL, "clickhouse://") {
+		if cfg.RetentionEnabled() {
+			return fmt.Errorf("clickhouse: retention pruning is not supported by the clickhouse backend")
+		}
 		st, err = store.NewStoreFromURL(cfg.DatabaseURL)
 		if err != nil {
 			return err
@@ -306,6 +313,7 @@ func run() error {
 		MaxBackoff:              cfg.IngesterMaxBackoff,
 		ReorgConfirmationWindow: cfg.ReorgConfirmationWindow,
 		ReorgRescanInterval:     cfg.ReorgRescanInterval,
+		SkipContracts:           cfg.SkipContracts,
 		Network:                 cfg.Network,
 	}).WithBroadcaster(bcast)
 	ing.SetNotifier(wh)

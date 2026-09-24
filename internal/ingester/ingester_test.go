@@ -324,6 +324,30 @@ func TestColdStart_ExplicitStartLedgerOverrides(t *testing.T) {
 	assert.Equal(t, uint32(1_234), client.eventsRequests[0].StartLedger)
 }
 
+func TestWarmStart_ExplicitStartLedgerOverrides(t *testing.T) {
+	client := &mockRPC{eventsResps: []rpc.GetEventsResponse{
+		{LatestLedger: 10_000},
+		{LatestLedger: 10_000},
+	}}
+	st := newMockStore()
+	require.NoError(t, st.SaveIngestionState(context.Background(),
+		store.IngestionState{LastIngestedLedger: 500, LastCursor: "cursor-42"}))
+	ing := newTestIngester(client, st, Options{StartLedger: 1_234})
+
+	_, err := ing.runOnce(context.Background())
+	require.NoError(t, err)
+	// It should use StartLedger, ignoring the warm start cursor.
+	assert.Equal(t, uint32(1_234), client.eventsRequests[0].StartLedger)
+	if client.eventsRequests[0].Pagination != nil {
+		assert.Empty(t, client.eventsRequests[0].Pagination.Cursor)
+	}
+
+	// On the second runOnce, it should use the new warm state (the override was consumed).
+	_, err = ing.runOnce(context.Background())
+	require.NoError(t, err)
+	assert.NotEqual(t, uint32(1_234), client.eventsRequests[1].StartLedger, "override should be consumed")
+}
+
 func TestWarmStart_ResumesAfterLastIngestedLedger(t *testing.T) {
 	client := &mockRPC{eventsResps: []rpc.GetEventsResponse{{LatestLedger: 1_000}}}
 	st := newMockStore()
@@ -864,6 +888,41 @@ func TestPersistEvents_RetainsRawXDR(t *testing.T) {
 	assert.Equal(t, "value-xdr", st.events["e1"].RawValueXDR)
 	assert.Empty(t, st.events["e2"].RawTopicXDR)
 	assert.Empty(t, st.events["e2"].RawValueXDR)
+}
+
+func TestSkipContracts(t *testing.T) {
+	skippedID := "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	keptID := "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+	ev1 := rpc.Event{
+		ID:         "e1",
+		Type:       "contract",
+		Ledger:     100,
+		ContractID: skippedID,
+	}
+	ev2 := rpc.Event{
+		ID:         "e2",
+		Type:       "contract",
+		Ledger:     100,
+		ContractID: keptID,
+	}
+
+	client := &mockRPC{eventsResps: []rpc.GetEventsResponse{{
+		Events:       []rpc.Event{ev1, ev2},
+		LatestLedger: 500,
+	}}}
+	st := newMockStore()
+	ing := newTestIngester(client, st, Options{
+		StartLedger:   100,
+		SkipContracts: []string{skippedID},
+	})
+
+	_, err := ing.runOnce(context.Background())
+	require.NoError(t, err)
+
+	_, hasEv1 := st.events["e1"]
+	_, hasEv2 := st.events["e2"]
+	assert.False(t, hasEv1, "event from skipped contract should not be persisted")
+	assert.True(t, hasEv2, "event from non-skipped contract should be persisted")
 }
 
 func TestPersistEvents_DeduplicatesEventIDs(t *testing.T) {
