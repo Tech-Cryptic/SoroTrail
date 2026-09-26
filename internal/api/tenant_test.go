@@ -168,6 +168,9 @@ type keyRecord struct {
 	id       int64
 	tenantID int64
 	digest   []byte
+	// plaintext records the full key so a test can revoke the key by
+	// deleting its exact prefix entry instead of guessing the split.
+	plaintext string
 }
 
 func newFakeTenants() *fakeTenants {
@@ -189,7 +192,7 @@ func (f *fakeTenants) addTenant(t *testing.T, tenant store.Tenant, grants ...str
 
 	plaintext, prefix, digest, err := GenerateAPIKey()
 	require.NoError(t, err)
-	f.keys[prefix] = keyRecord{id: tenant.ID * 100, tenantID: tenant.ID, digest: digest}
+	f.keys[prefix] = keyRecord{id: tenant.ID * 100, tenantID: tenant.ID, digest: digest, plaintext: plaintext}
 	return plaintext
 }
 
@@ -1327,8 +1330,14 @@ func TestRevokedKeyRejectedOnNextRequest(t *testing.T) {
 	rec := f.get(t, f.keyA, "/events")
 	assert.Equal(t, http.StatusOK, rec.Code)
 
-	// Simulate revocation by removing the key from the lookup table.
-	delete(f.tenants.keys, f.keyA[:len(f.keyA)/2]) // remove the prefix entry
+	// Simulate revocation by removing the key's exact prefix entry from
+	// the lookup table, so the next request cannot resolve it.
+	for prefix, rec := range f.tenants.keys {
+		if rec.plaintext == f.keyA {
+			delete(f.tenants.keys, prefix)
+			break
+		}
+	}
 	// The prefix-based lookup will no longer find this key.
 
 	// Next request must be rejected.
@@ -1341,7 +1350,6 @@ func TestRevokedKeyRejectedOnNextRequest(t *testing.T) {
 // only receive events for contracts it is granted.
 func TestWebSocketSubscriptionsHonourBoundary(t *testing.T) {
 	f := newTenantFixture(t)
-	st := f.st.(*scopedStore)
 
 	// Verify that the store's scope filtering applies to subscription
 	// paths the same way it does to read endpoints.
