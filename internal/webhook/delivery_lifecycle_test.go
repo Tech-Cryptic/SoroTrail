@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -56,9 +57,12 @@ func TestWebhookDeliveryLifecycle_Table(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			done := make(chan struct{})
-			var callCount int
+			// Retries can overlap when a request is cut off by the client
+			// timeout, so the handler runs concurrently — the counter must
+			// be atomic or the race detector (rightly) fails the test.
+			var callCount atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				callCount++
+				attempts := callCount.Add(1)
 
 				if tt.expectSignature {
 					assert.NotEmpty(t, r.Header.Get(SignatureHeader))
@@ -68,7 +72,7 @@ func TestWebhookDeliveryLifecycle_Table(t *testing.T) {
 				}
 
 				tt.serverHandler(w, r)
-				if callCount == tt.expectedAttempts {
+				if int(attempts) == tt.expectedAttempts {
 					close(done)
 				}
 			}))
@@ -96,8 +100,8 @@ func TestWebhookDeliveryLifecycle_Table(t *testing.T) {
 			case <-done:
 				time.Sleep(100 * time.Millisecond) // Allow recordSuccess/incrementFailures to process
 			case <-time.After(3 * time.Second):
-				if callCount < tt.expectedAttempts {
-					t.Fatalf("timed out waiting for worker. expected %d calls, got %d", tt.expectedAttempts, callCount)
+				if got := callCount.Load(); got < int64(tt.expectedAttempts) {
+					t.Fatalf("timed out waiting for worker. expected %d calls, got %d", tt.expectedAttempts, got)
 				}
 			}
 

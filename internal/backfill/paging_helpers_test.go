@@ -177,7 +177,9 @@ func TestBackfillerCommitPage_InterruptedCommitLeavesProgressUnchanged(t *testin
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, updateErr)
-	assert.EqualValues(t, 0, inserted)
+	// The upsert completed before the progress write failed, so the row
+	// count this page did insert is still reported to the caller.
+	assert.EqualValues(t, 1, inserted)
 	assert.Len(t, fs.rows, 1, "the upsert completed before the progress write failed")
 	assert.Zero(t, fs.state.LastLedger, "failed progress must not claim the page")
 }
