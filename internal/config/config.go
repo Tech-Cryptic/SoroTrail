@@ -835,13 +835,27 @@ func cleanContractList(in []string) []string {
 // middleware recognizes (see API CORS handler).
 // cleanOrigins normalizes CORS origin entries: env/v11 splits on commas but
 // preserves whitespace, and operators commonly paste origins with a trailing
-// slash, so each entry is trimmed and any trailing "/" removed.
+// slash, so each entry is trimmed and any trailing "/" removed. Duplicates
+// are dropped after normalization — the allow-list is a set, and the same
+// origin pasted twice (or spelled with and without a slash) would otherwise
+// match twice for no benefit. The returned slice is always non-nil so callers
+// can range over it without a nil check.
 func cleanOrigins(in []string) []string {
 	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
 	for _, s := range in {
-		if s = strings.TrimSpace(s); s != "" {
-			out = append(out, strings.TrimSuffix(s, "/"))
+		if s = strings.TrimSpace(s); s == "" {
+			continue
 		}
+		s = strings.TrimSuffix(s, "/")
+		if s == "" {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
 	}
 	return out
 }

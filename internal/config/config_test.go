@@ -1467,3 +1467,70 @@ func TestLoadStartLedgerRaw(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "latest-500", cfg.StartLedgerRaw)
 }
+
+// TestCleanOrigins covers the CORS allow-list normalizer. Whatever it
+// lets through becomes an allowed browser origin, so trimming, empty
+// handling, and de-duplication must be exact — and the result must be
+// an empty list rather than nil so callers can range over it safely.
+func TestCleanOrigins(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{
+			name: "nil input returns an empty list rather than nil",
+			in:   nil,
+			want: []string{},
+		},
+		{
+			name: "empty input returns an empty list rather than nil",
+			in:   []string{},
+			want: []string{},
+		},
+		{
+			name: "surrounding whitespace is trimmed from each entry",
+			in:   []string{"  https://app.example.com  ", "\thttps://admin.example.com\n"},
+			want: []string{"https://app.example.com", "https://admin.example.com"},
+		},
+		{
+			name: "empty entries are dropped",
+			in:   []string{"", "   ", "https://app.example.com"},
+			want: []string{"https://app.example.com"},
+		},
+		{
+			name: "duplicates are removed keeping the first occurrence",
+			in:   []string{"https://a.example.com", "https://b.example.com", "https://a.example.com"},
+			want: []string{"https://a.example.com", "https://b.example.com"},
+		},
+		{
+			// "a.example.com" and "a.example.com/" are the same
+			// origin to a browser; deduplication happens after the
+			// trailing slash is stripped so the two collapse.
+			name: "duplicates that differ only by trailing slash are removed",
+			in:   []string{"https://a.example.com/", "https://a.example.com"},
+			want: []string{"https://a.example.com"},
+		},
+		{
+			// A raw value with a trailing comma splits into a
+			// trailing empty element; it must not surface as an
+			// origin in the allow-list.
+			name: "trailing comma in the raw value does not produce an empty origin",
+			in:   []string{"https://app.example.com", ""},
+			want: []string{"https://app.example.com"},
+		},
+		{
+			name: "trailing slash is removed",
+			in:   []string{"https://app.example.com/"},
+			want: []string{"https://app.example.com"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cleanOrigins(tt.in)
+			require.NotNil(t, got, "cleanOrigins must return an empty list rather than nil")
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
