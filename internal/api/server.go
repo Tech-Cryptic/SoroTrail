@@ -21,6 +21,7 @@ import (
 	"github.com/sorotrail/sorotrail/internal/ingester"
 	"github.com/sorotrail/sorotrail/internal/metrics"
 	"github.com/sorotrail/sorotrail/internal/pruner"
+	"github.com/sorotrail/sorotrail/internal/requestid"
 	"github.com/sorotrail/sorotrail/internal/rpc"
 	"github.com/sorotrail/sorotrail/internal/store"
 )
@@ -642,8 +643,12 @@ func (s *Server) requestLogger(next http.Handler) http.Handler {
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		start := time.Now()
 		reqID := middleware.GetReqID(r.Context())
-		log := s.log.With("request_id", reqID, "route", r.Method+" "+r.URL.Path)
+		log := s.log.With(requestid.Field, reqID, "route", r.Method+" "+r.URL.Path)
 		ctx := context.WithValue(r.Context(), loggerCtxKey, log)
+		// Mirror the id onto the context so layers below the router — the
+		// store and RPC decorators in particular — can tag their own slow-
+		// query and error logs without the handler passing it along.
+		ctx = requestid.WithRequestID(ctx, reqID)
 		ww.Header().Set("X-Request-ID", reqID)
 		next.ServeHTTP(ww, r.WithContext(ctx))
 		if span := trace.SpanFromContext(r.Context()); span.IsRecording() {
@@ -679,6 +684,20 @@ func loggerFromContext(ctx context.Context) *slog.Logger {
 		return slog.Default()
 	}
 	return log
+}
+
+// RequestIDFrom returns the correlatable request ID the request-ID
+// middleware installed on the context: either the client-supplied
+// X-Request-ID header value, or the generated "host/random-counter" ID
+// when the client sent none. Every log line for the request carries the
+// same value under the request_id key, and the same value is echoed in
+// the X-Request-ID response header.
+//
+// Handlers and middleware downstream of the router read the ID from here
+// (rather than re-parsing headers) so the context is the single source of
+// truth for correlation.
+func RequestIDFrom(ctx context.Context) string {
+	return middleware.GetReqID(ctx)
 }
 
 // SetGraphQLHandler mounts the GraphQL transport. handler serves /graphql;

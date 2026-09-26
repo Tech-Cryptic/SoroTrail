@@ -93,6 +93,7 @@ type Config struct {
 	// valid host:port pair.
 	HTTPAddr              string        `env:"HTTP_ADDR" envDefault:":8080"`
 	WatchedContracts      []string      `env:"WATCHED_CONTRACTS"`
+	SkipContracts         []string      `env:"SKIP_CONTRACTS"`
 	StartLedger           uint32        `env:"START_LEDGER"`
 	StartLedgerRaw        string        `env:"START_LEDGER_RAW"`
 	RetentionLedgers      uint32        `env:"RETENTION_LEDGERS" envDefault:"17280"`
@@ -379,6 +380,7 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("parsing environment: %w", err)
 	}
 	cfg.WatchedContracts = cleanContractList(cfg.WatchedContracts)
+	cfg.SkipContracts = cleanContractList(cfg.SkipContracts)
 	cfg.RPCURLS = cleanContractList(cfg.RPCURLS)
 	cfg.CORSAllowedOrigins = cleanOrigins(cfg.CORSAllowedOrigins)
 	cfg.Network = strings.ToLower(strings.TrimSpace(cfg.Network))
@@ -560,6 +562,11 @@ func (c Config) Validate() error {
 	for _, id := range c.WatchedContracts {
 		if !ValidContractID(id) {
 			return fmt.Errorf("WATCHED_CONTRACTS entry %q is not a valid contract ID (want C... strkey, 56 chars)", id)
+		}
+	}
+	for _, id := range c.SkipContracts {
+		if !ValidContractID(id) {
+			return fmt.Errorf("SKIP_CONTRACTS entry %q is not a valid contract ID (want C... strkey, 56 chars)", id)
 		}
 	}
 	if c.AuditPollInterval <= 0 {
@@ -828,13 +835,27 @@ func cleanContractList(in []string) []string {
 // middleware recognizes (see API CORS handler).
 // cleanOrigins normalizes CORS origin entries: env/v11 splits on commas but
 // preserves whitespace, and operators commonly paste origins with a trailing
-// slash, so each entry is trimmed and any trailing "/" removed.
+// slash, so each entry is trimmed and any trailing "/" removed. Duplicates
+// are dropped after normalization — the allow-list is a set, and the same
+// origin pasted twice (or spelled with and without a slash) would otherwise
+// match twice for no benefit. The returned slice is always non-nil so callers
+// can range over it without a nil check.
 func cleanOrigins(in []string) []string {
 	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
 	for _, s := range in {
-		if s = strings.TrimSpace(s); s != "" {
-			out = append(out, strings.TrimSuffix(s, "/"))
+		if s = strings.TrimSpace(s); s == "" {
+			continue
 		}
+		s = strings.TrimSuffix(s, "/")
+		if s == "" {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
 	}
 	return out
 }
@@ -882,6 +903,7 @@ func (c Config) LoggableFields() []any {
 		"poll_interval_max", c.PollIntervalMax,
 		"http_addr", c.HTTPAddr,
 		"watched_contracts", len(c.WatchedContracts),
+		"skip_contracts", len(c.SkipContracts),
 		"start_ledger", c.StartLedger,
 		"start_ledger_raw", c.StartLedgerRaw,
 		"retention_ledgers", c.RetentionLedgers,
